@@ -1,0 +1,10 @@
+# В образ попадают только bot, playlists и requirements.txt — остальное Docker даже не нужно отправлять
+.env
+.env.txt
+data
+.build
+*.exe
+assets
+.git
+**/__pycache__
+.DS_Store

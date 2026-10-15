@@ -1,0 +1,21 @@
+services:
+  radio-bot:
+    build: .
+    image: kamchatka-radio-bot
+    container_name: kamchatka-radio-bot
+    # Бот сам запускается вместе с Docker Desktop и перезапускается при сбоях
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Плейлисты берутся из папки playlists — их можно менять без пересборки
+      - ./playlists:/app/playlists:ro
+      # Здесь бот запоминает, где стоит пульт и какая громкость
+      - radio-data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  radio-data:

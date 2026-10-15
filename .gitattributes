@@ -1,0 +1,8 @@
+* text=auto
+
+# Батники Windows должны оставаться с переводами строк CRLF, иначе cmd путается в метках
+*.bat text eol=crlf
+
+*.png binary
+*.gif binary
+*.exe binary
