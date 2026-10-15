@@ -66,6 +66,7 @@ ACCENT_IDLE = 0x4B2E83
 class GuildState:
     volume: float
     panel: tuple[int, int] | None = None  # постоянный пульт: (id канала, id сообщения)
+    control_role: int | None = None  # роль, которой можно управлять радио; None — управлять могут все
     station: Station | None = None
     # Растёт при каждом запуске и остановке потока: по нему отбрасываются колбэки от старых потоков.
     generation: int = 0
@@ -87,7 +88,8 @@ class RadioBot(discord.Client):
         intents.guilds = True
         intents.voice_states = True
         intents.guild_messages = True  # чтобы замечать переписку в канале с пультом (текст не читается)
-        super().__init__(intents=intents)
+        # Пульт упоминает роль с правами на управление — без уведомлений участникам этой роли.
+        super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
         self.config = config
         self.playlist = playlist
         self.stations = playlist.stations
@@ -107,9 +109,11 @@ class RadioBot(discord.Client):
             saved = self.storage.guild(guild_id)
             volume = saved.get("volume")
             panel = saved.get("panel")
+            role = saved.get("control_role")
             self.states[guild_id] = GuildState(
                 volume=volume if isinstance(volume, (int, float)) and 0 < volume <= 1 else self.config.volume,
                 panel=(int(panel[0]), int(panel[1])) if isinstance(panel, list) and len(panel) == 2 else None,
+                control_role=role if isinstance(role, int) else None,
             )
         return self.states[guild_id]
 
@@ -387,7 +391,11 @@ class RadioBot(discord.Client):
             frame.add_item(discord.ui.Separator())
             for row in self._button_rows(station):
                 frame.add_item(row)
-        frame.add_item(discord.ui.TextDisplay(f"-# Громкость: {round(state.volume * 100)}%"))
+        footer = f"-# Громкость: {round(state.volume * 100)}%"
+        role = self.control_role(guild)
+        if role is not None:
+            footer += f" · {self.icons.get('radio_lock', '🔒')} управляют {role.mention} и администраторы"
+        frame.add_item(discord.ui.TextDisplay(footer))
         panel.add_item(frame)
         return panel
 
@@ -514,11 +522,33 @@ class RadioBot(discord.Client):
         if state.panel is not None and state.panel[1] != clicked:
             await self.refresh_panel(guild)
 
+    def control_role(self, guild: discord.Guild) -> discord.Role | None:
+        """Роль, которой можно управлять радио, или None — управлять могут все (в том числе если роль удалили)."""
+        role_id = self.state(guild.id).control_role
+        return guild.get_role(role_id) if role_id is not None else None
+
+    async def _allowed(self, interaction: discord.Interaction) -> bool:
+        """Пульт видят все, а нажимать кнопки могут участники с ролью из /radio-access и администраторы."""
+        guild, member = interaction.guild, interaction.user
+        role = self.control_role(guild) if guild is not None else None
+        if role is None or not isinstance(member, discord.Member):
+            return True
+        if member.guild_permissions.manage_guild or role in member.roles:
+            return True
+        await interaction.response.send_message(
+            f"{self.icons.get('radio_lock', '🔒')} Управлять радио могут только участники с ролью {role.mention}. "
+            "Если вам нужен доступ, попросите администратора выдать эту роль.",
+            ephemeral=True,
+        )
+        return False
+
     async def handle_play(self, interaction: discord.Interaction, station: Station, *, from_panel: bool) -> None:
         guild = interaction.guild
         member = interaction.user
         if guild is None or not isinstance(member, discord.Member):
             await interaction.response.send_message("Это работает только на сервере.", ephemeral=True)
+            return
+        if not await self._allowed(interaction):
             return
         # Бот идёт в голосовой канал того, кто нажал кнопку.
         channel = member.voice.channel if member.voice else None
@@ -561,6 +591,8 @@ class RadioBot(discord.Client):
         if guild is None:
             await interaction.response.send_message("Это работает только на сервере.", ephemeral=True)
             return
+        if not await self._allowed(interaction):
+            return
         await self._defer(interaction, from_panel)
         was_playing = self.voice(guild) is not None
         await self.stop(guild)
@@ -576,6 +608,8 @@ class RadioBot(discord.Client):
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message("Это работает только на сервере.", ephemeral=True)
+            return
+        if not await self._allowed(interaction):
             return
         await self._defer(interaction, from_panel)
         volume = self.set_volume(guild, volume)
@@ -602,10 +636,36 @@ class RadioBot(discord.Client):
             await interaction.followup.send(f"😕 Не получилось разместить пульт: {exc.text or exc}", ephemeral=True)
             return
         log.info("Пульт размещён на сервере «%s» в канале #%s", guild.name, getattr(channel, "name", channel.id))
-        await interaction.followup.send(
-            f"✅ Готово! Пульт размещён в <#{channel.id}>. Пользоваться им может любой, кто видит этот канал.",
-            ephemeral=True,
+        role = self.control_role(guild)
+        who = (
+            f"участники с ролью {role.mention} и администраторы."
+            if role is not None
+            else "все, кто видит канал. Ограничить управление одной ролью можно командой `/radio-access`."
         )
+        await interaction.followup.send(
+            f"✅ Готово! Пульт размещён в <#{channel.id}>. Видят его все, а управлять могут {who}", ephemeral=True
+        )
+
+    async def handle_access(self, interaction: discord.Interaction, role: discord.Role | None) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("Это работает только на сервере.", ephemeral=True)
+            return
+        if role is not None and role.is_default():
+            role = None  # @everyone — то же самое, что «все»
+        self.state(guild.id).control_role = role.id if role is not None else None
+        self.storage.update(guild.id, control_role=role.id if role is not None else None)
+        if role is None:
+            log.info("«%s»: управлять радио могут все", guild.name)
+            text = "✅ Теперь управлять радио могут все, кто видит пульт."
+        else:
+            log.info("«%s»: управлять радио могут участники с ролью %s", guild.name, role.name)
+            text = (
+                f"✅ Теперь кнопки пульта работают только у участников с ролью {role.mention} и у администраторов. "
+                "Остальные видят пульт, но управлять им не могут. Вернуть доступ всем — `/radio-access` без роли."
+            )
+        await interaction.response.send_message(text, ephemeral=True)
+        await self.refresh_panel(guild)
 
     # ---------- «что сейчас играет» ----------
 
@@ -689,6 +749,13 @@ def register_commands(bot: RadioBot) -> None:
     @app_commands.default_permissions(manage_guild=True)
     async def setup(interaction: discord.Interaction) -> None:
         await bot.handle_setup(interaction)
+
+    @bot.tree.command(name="radio-access", description="Кто может управлять радио: участники с одной ролью или все")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.rename(role="роль")
+    @app_commands.describe(role="Кому можно нажимать кнопки пульта. Не указывать — управлять смогут все")
+    async def access(interaction: discord.Interaction, role: discord.Role | None = None) -> None:
+        await bot.handle_access(interaction, role)
 
     @bot.tree.command(name="radio", description="Открыть личный пульт радио (видно только вам)")
     async def radio(interaction: discord.Interaction) -> None:

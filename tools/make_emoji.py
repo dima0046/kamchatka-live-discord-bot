@@ -193,6 +193,26 @@ def headphones():
     for x in (1, 12): g[9][x] = g[10][x] = "P"                             # блики
     return g
 
+# ---------- Нет прав на управление: замок ----------
+LOCK = [
+    "................",
+    ".....CCCCCC.....",
+    "....CC....CC....",
+    "....C......C....",
+    "....C......C....",
+    "....C......C....",
+    "..MMMMMMMMMMMM..",
+    "..MPPMMMMMMMMM..",
+    "..MPMMMMMMMMMM..",
+    "..MMMMMDDMMMMM..",
+    "..MMMMMDDMMMMM..",
+    "..MMMMMDDMMMMM..",
+    "..MMMMMMMMMMMM..",
+    "..mmmmmmmmmmmm..",
+    "................",
+    "................",
+]
+
 # ---------- Подсказка «нажмите кнопку»: стрелка вниз ----------
 ARROW = [
     "................",
@@ -216,7 +236,7 @@ ARROW = [
 sprites = {
     "radio_dance": mirror_ball(), "radio_chill": palm(), "radio_house": vinyl(),
     "radio_stop": stop(), "radio_quieter": speaker(1), "radio_louder": speaker(3),
-    "radio_note": parse(NOTE), "radio_listen": headphones(), "radio_down": parse(ARROW),
+    "radio_note": parse(NOTE), "radio_listen": headphones(), "radio_down": parse(ARROW), "radio_lock": parse(LOCK),
 }
 for name, grid in sprites.items():
     to_image(grid).save(OUT / f"{name}.png", optimize=True)
